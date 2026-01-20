@@ -15,7 +15,7 @@
 
 1.  **克隆或下载项目**
     ```bash
-    git clone <your-repo-url>
+    git clone https://github.com/lee1080/CloudMusicLinker.git
     cd cloud-music-linker
     ```
 
@@ -34,6 +34,22 @@
     访问 Web 界面 `http://localhost:3000` 的设置页，或直接修改 `config.js`/环境变量来配置：
     - `PORT`: 服务端口 (默认 3000)
     - `NETEASE_COOKIE`: (可选，推荐在请求时动态传入) 网易云音乐 Cookie
+
+4.  **一键docker启动**
+    创建`docker-compose.yml`文件
+    ```yaml
+    version: '3'
+    services:
+      cloud-musiclinker:
+        image: lee1080/cloudmusic-linker:latest
+        container_name: cloudmusic-linker
+        restart: always
+        ports:
+          - "3000:3000"
+        environment:
+          - TZ=Asia/Shanghai
+    ```
+    执行`docker-compose up -d`启动容器
 
 ## 使用方法
 
