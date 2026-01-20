@@ -1,0 +1,14 @@
+version: '3'
+services:
+  cloud-musiclinker:
+    build: .
+    container_name: cloud-musiclinker
+    restart: always
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./config.js:/app/config.js
+      - ./downloads:/app/downloads
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai

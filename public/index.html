@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CloudMusic Linker</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="container">
+        <button class="settings-btn" id="openSettingsBtn" title="设置">⚙️</button>
+
+        <h1>CloudMusic Linker</h1>
+        <div class="subtitle">一键提取音频并上传至网易云音乐云盘</div>
+
+        <div class="input-group">
+            <input type="text" id="urlInput" placeholder="粘贴视频/音频分享链接...">
+            <button id="submitBtn" class="primary-btn">开始转换</button>
+        </div>
+
+        <div id="log-console">
+            <div class="log-entry">等待任务...</div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>设置</h2>
+                <span class="close-btn" id="closeSettingsBtn">&times;</span>
+            </div>
+
+            <div class="modal-body">
+                <div class="tabs">
+                    <button class="tab-btn active" onclick="openTab('netease')">网易云</button>
+                    <button class="tab-btn" onclick="openTab('douyin')">抖音</button>
+                    <button class="tab-btn" onclick="openTab('bilibili')">Bilibili</button>
+                    <button class="tab-btn" onclick="openTab('youtube')">YouTube</button>
+                    <button class="tab-btn" onclick="openTab('tiktok')">TikTok</button>
+                </div>
+
+                <div id="netease" class="tab-content active">
+                    <label>网易云音乐 Cookie</label>
+                    <div class="helper-text">用于上传音频。请粘贴完整的 Cookie 字符串 (MUSIC_U=...)。</div>
+                    <textarea id="neteaseCookie" placeholder="MUSIC_U=..."></textarea>
+                </div>
+
+                <div id="douyin" class="tab-content">
+                    <label>抖音 Cookie</label>
+                    <div class="helper-text">支持 Header 格式 (key=value;) 或 Netscape 格式。</div>
+                    <textarea id="douyinCookie" placeholder="odin_tt=...; sessionid=..."></textarea>
+                </div>
+
+                <div id="bilibili" class="tab-content">
+                    <label>Bilibili Cookie</label>
+                    <div class="helper-text">支持 Header 格式 (key=value;) 或 Netscape 格式。</div>
+                    <textarea id="bilibiliCookie" placeholder="SESSDATA=..."></textarea>
+                </div>
+
+                <div id="youtube" class="tab-content">
+                    <label>YouTube Cookie</label>
+                    <div class="helper-text">建议使用 Netscape 格式 (# Netscape HTTP Cookie File...)。</div>
+                    <textarea id="youtubeCookie" placeholder="# Netscape HTTP Cookie File..."></textarea>
+                </div>
+
+                <div id="tiktok" class="tab-content">
+                    <label>TikTok Cookie</label>
+                    <div class="helper-text">支持 Header 格式 (key=value;) 或 Netscape 格式。</div>
+                    <textarea id="tiktokCookie" placeholder="tt_webid=..."></textarea>
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <button id="saveSettingsBtn" class="primary-btn">保存设置</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const urlInput = document.getElementById('urlInput');
+        const submitBtn = document.getElementById('submitBtn');
+        const logConsole = document.getElementById('log-console');
+
+        // Setup SSE for logs
+        const eventSource = new EventSource('/api/sse');
+        eventSource.onmessage = function (event) {
+            const data = JSON.parse(event.data);
+            addLog(data.message);
+        };
+
+        function addLog(message) {
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.textContent = `> ${message}`;
+            logConsole.appendChild(entry);
+            logConsole.scrollTop = logConsole.scrollHeight;
+        }
+
+        submitBtn.addEventListener('click', async () => {
+            const url = urlInput.value.trim();
+            if (!url) return alert('请输入链接');
+
+            submitBtn.disabled = true;
+            submitBtn.textContent = '处理中...';
+            logConsole.innerHTML = ''; // Clear logs
+            addLog('开始任务...');
+
+            // Get cookies from localStorage
+            const settings = JSON.parse(localStorage.getItem('cloudMusicLinkerSettings') || '{}');
+
+            try {
+                const response = await fetch('/api/process', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        url,
+                        cookies: settings // Send cookies to backend
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    addLog(`✅ 成功: ${result.songName}`);
+                    alert('上传成功！');
+                } else {
+                    addLog(`❌ 失败: ${result.message}`);
+                    alert('上传失败: ' + result.message);
+                }
+            } catch (error) {
+                addLog(`❌ 网络错误: ${error.message}`);
+                alert('网络错误');
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = '开始转换';
+            }
+        });
+
+        // Settings Logic
+        const modal = document.getElementById('settingsModal');
+        const openBtn = document.getElementById('openSettingsBtn');
+        const closeBtn = document.getElementById('closeSettingsBtn');
+        const saveBtn = document.getElementById('saveSettingsBtn');
+
+        // Inputs
+        const inputs = {
+            netease: document.getElementById('neteaseCookie'),
+            douyin: document.getElementById('douyinCookie'),
+            bilibili: document.getElementById('bilibiliCookie'),
+            youtube: document.getElementById('youtubeCookie'),
+            tiktok: document.getElementById('tiktokCookie')
+        };
+
+        // Tab Logic
+        window.openTab = function (tabName) {
+            // Hide all contents
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+            // Deactivate all buttons
+            document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+
+            // Show selected
+            document.getElementById(tabName).classList.add('active');
+            // Activate button
+            const btns = document.querySelectorAll('.tab-btn');
+            btns.forEach(btn => {
+                if (btn.getAttribute('onclick').includes(tabName)) {
+                    btn.classList.add('active');
+                }
+            });
+        }
+
+        openBtn.onclick = () => {
+            modal.style.display = 'flex';
+            // Load settings from localStorage
+            const settings = JSON.parse(localStorage.getItem('cloudMusicLinkerSettings') || '{}');
+            inputs.netease.value = settings.neteaseCookie || '';
+            inputs.douyin.value = settings.douyinCookie || '';
+            inputs.bilibili.value = settings.bilibiliCookie || '';
+            inputs.youtube.value = settings.youtubeCookie || '';
+            inputs.tiktok.value = settings.tiktokCookie || '';
+        }
+
+        closeBtn.onclick = () => {
+            modal.style.display = 'none';
+        }
+
+        window.onclick = (event) => {
+            if (event.target == modal) {
+                modal.style.display = 'none';
+            }
+        }
+
+        saveBtn.onclick = () => {
+            const settings = {
+                neteaseCookie: inputs.netease.value,
+                douyinCookie: inputs.douyin.value,
+                bilibiliCookie: inputs.bilibili.value,
+                youtubeCookie: inputs.youtube.value,
+                tiktokCookie: inputs.tiktok.value
+            };
+            localStorage.setItem('cloudMusicLinkerSettings', JSON.stringify(settings));
+            alert('设置已保存到本地');
+            modal.style.display = 'none';
+        }
+    </script>
+</body>
+
+</html>
