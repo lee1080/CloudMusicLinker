@@ -84,3 +84,7 @@
 - 请确保服务器网络可以访问目标视频网站。
 - 自动下载依赖功能需要服务器能够访问 GitHub 和相关下载源。
 - **Cookies 安全**: 请妥善保管你的网易云 Cookie，不要泄露给他人。建议仅在受信任的局域网环境中使用。
+
+## License
+
+[MIT](https://github.com/lee1080/CloudMusicLinker/blob/master/LICENSE) © [lee1080](https://github.com/lee1080)
