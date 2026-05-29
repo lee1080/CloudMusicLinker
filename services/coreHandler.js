@@ -5,6 +5,7 @@ const config = require('../config');
 const mediaHelper = require('../utils/mediaHelper');
 const neteaseHelper = require('../utils/neteaseHelper');
 const v2obHelper = require('../utils/v2obHelper');
+const debugCache = require('../utils/debugCache');
 
 let customFilename = null;
 
@@ -104,9 +105,29 @@ function findKey(obj, keyToFind) {
  * @param {function} logCallback (message) => void
  * @returns {Promise<Object>} Result
  */
+function cleanTempDir(log) {
+    log('正在清理旧的临时文件...');
+    try {
+        const files = fs.readdirSync(config.TEMP_DIR);
+        for (const file of files) {
+            if (file !== 'cookies.txt') {
+                try {
+                    fs.unlinkSync(path.join(config.TEMP_DIR, file));
+                } catch (err) {
+                    console.error(`删除文件失败 ${file}:`, err.message);
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Failed to clean temp dir:', e);
+    }
+}
+
 async function processLink(inputUrl, logCallback, cookies = {}) {
     let downloadedFile = null;
     let convertedFile = null;
+    let skipDownload = false;
+    const debugMode = config.DEBUG_MODE === true;
 
     const log = (msg) => {
         console.log(`[Core] ${msg}`);
@@ -114,26 +135,56 @@ async function processLink(inputUrl, logCallback, cookies = {}) {
     };
 
     try {
-        // Clean temp dir to prevent mixing up files
-        log('正在清理旧的临时文件...');
-        try {
-            const files = fs.readdirSync(config.TEMP_DIR);
-            for (const file of files) {
-                if (file !== 'cookies.txt') { // Keep cookies
-                    try {
-                        fs.unlinkSync(path.join(config.TEMP_DIR, file));
-                        // log(`已删除: ${file}`);
-                    } catch (err) {
-                        console.error(`删除文件失败 ${file}:`, err.message);
-                    }
-                }
+        let canonicalKey = null;
+        let canonicalPreview = '';
+
+        if (debugMode) {
+            log('调试模式已开启');
+            const resolved = await debugCache.resolveCanonicalKey(inputUrl, unshortenUrl);
+            canonicalKey = resolved.key;
+            canonicalPreview = resolved.preview;
+            log(`链接标识: ${canonicalPreview}`);
+
+            const cache = debugCache.loadCache();
+            const cachedMp3 = debugCache.findCachedMp3ByKey(canonicalKey);
+
+            if (cachedMp3) {
+                log('检测到相同视频链接，跳过下载与转码，直接上传已有 MP3');
+                log(`使用缓存文件: ${cachedMp3}`);
+                convertedFile = cachedMp3;
+                skipDownload = true;
+            } else if (cache?.canonicalKey && cache.canonicalKey !== canonicalKey) {
+                log(`链接已变更 (${cache.canonicalPreview || cache.canonicalKey} → ${canonicalPreview})`);
+                log('清理旧 MP3 与 temp，准备重新下载...');
+                debugCache.clearCachedMp3();
+                cleanTempDir(log);
+            } else {
+                log('新链接或缓存 MP3 不存在，清理 temp 后开始下载...');
+                cleanTempDir(log);
             }
-        } catch (e) {
-            console.error('Failed to clean temp dir:', e);
+        } else {
+            cleanTempDir(log);
         }
 
-        // Reset custom filename for each request
         customFilename = null;
+
+        if (skipDownload) {
+            log('正在上传至网易云音乐...');
+            await neteaseHelper.uploadToCloud(convertedFile, cookies.neteaseCookie);
+            const verified = await neteaseHelper.verifyInCloudByMd5(
+                convertedFile,
+                cookies.neteaseCookie
+            );
+            if (!verified) {
+                throw new Error('上传流程结束，但云盘列表中未找到该文件，请稍后刷新网易云 App 或重试上传');
+            }
+            log('上传成功! 云盘列表已确认');
+            return {
+                status: 'success',
+                message: '上传完成（调试模式复用 MP3）',
+                songName: mediaHelper.getFileName(convertedFile)
+            };
+        }
 
         log('正在解析链接...');
         // Simple regex to extract URL from text (e.g. "Check this out https://...")
@@ -212,11 +263,23 @@ async function processLink(inputUrl, logCallback, cookies = {}) {
         convertedFile = await mediaHelper.convertToMp3(downloadedFile);
         log('转码完成');
 
-        log('正在上传至网易云音乐...');
-        const uploadResult = await neteaseHelper.uploadToCloud(convertedFile, cookies.neteaseCookie);
+        if (debugMode && convertedFile && canonicalKey) {
+            debugCache.saveCache(inputUrl, convertedFile, canonicalKey, canonicalPreview);
+            log(`调试模式：已缓存 MP3（上传失败也可复用）→ [${canonicalPreview}]`);
+        }
 
-        // neteaseHelper 已经处理了错误检查，如果到这里说明上传成功
-        log('上传成功!');
+        log('正在上传至网易云音乐...');
+        await neteaseHelper.uploadToCloud(convertedFile, cookies.neteaseCookie);
+
+        const verified = await neteaseHelper.verifyInCloudByMd5(
+            convertedFile,
+            cookies.neteaseCookie
+        );
+        if (!verified) {
+            throw new Error('上传流程结束，但云盘列表中未找到该文件，请稍后刷新网易云 App 或重试上传');
+        }
+
+        log('上传成功! 云盘列表已确认');
 
         return {
             status: 'success',
@@ -225,13 +288,37 @@ async function processLink(inputUrl, logCallback, cookies = {}) {
         };
 
     } catch (error) {
-        log(`错误: ${error.message}`);
-        throw error;
+        const msg = error?.message || String(error);
+        log(`错误: ${msg}`);
+        throw error instanceof Error ? error : new Error(msg);
     } finally {
-        log('正在清理临时文件...');
-        if (downloadedFile && fs.existsSync(downloadedFile)) fs.unlinkSync(downloadedFile);
-        if (convertedFile && fs.existsSync(convertedFile)) fs.unlinkSync(convertedFile);
-        log('清理完成');
+        if (debugMode) {
+            if (downloadedFile && fs.existsSync(downloadedFile)) {
+                try {
+                    fs.unlinkSync(downloadedFile);
+                    log('调试模式：已清理本次下载的临时视频');
+                } catch (err) {
+                    console.error('清理下载文件失败:', err.message);
+                }
+            }
+            try {
+                const tempFiles = fs.readdirSync(config.TEMP_DIR);
+                for (const file of tempFiles) {
+                    if (file === 'cookies.txt') continue;
+                    fs.unlinkSync(path.join(config.TEMP_DIR, file));
+                }
+            } catch (e) {
+                // ignore
+            }
+            if (convertedFile && fs.existsSync(convertedFile)) {
+                log(`调试模式：保留转码 MP3 → ${convertedFile}`);
+            }
+        } else {
+            log('正在清理临时文件...');
+            if (downloadedFile && fs.existsSync(downloadedFile)) fs.unlinkSync(downloadedFile);
+            if (convertedFile && fs.existsSync(convertedFile)) fs.unlinkSync(convertedFile);
+            log('清理完成');
+        }
     }
 }
 

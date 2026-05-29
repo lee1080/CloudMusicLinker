@@ -306,15 +306,13 @@ function downloadDirectMedia(url, onProgress, customFilename) {
  */
 function convertToMp3(inputPath) {
     return new Promise((resolve, reject) => {
-        // 清理文件名中的特殊字符
         let baseName = path.basename(inputPath, path.extname(inputPath));
-        // 替换各种斜杠变体和其他特殊字符
         const sanitizedName = baseName
-            .replace(/[⧸⁄∕／\\\/]/g, '-')  // 各种斜杠变体替换为横杠
-            .replace(/[<>:"|?*]/g, '')      // Windows 不允许的字符移除
-            .replace(/\s+/g, ' ')            // 多个空格合并
+            .replace(/[⧸⁄∕／\\\/]/g, '-')
+            .replace(/[<>:"|?*]/g, '')
+            .replace(/\s+/g, ' ')
             .trim()
-            .substring(0, 100);              // 限制长度
+            .substring(0, 100);
 
         const outputPath = path.join(config.DOWNLOAD_DIR, sanitizedName + '.mp3');
 
@@ -324,18 +322,16 @@ function convertToMp3(inputPath) {
 
         console.log('[MediaHelper] Converting to MP3:', inputPath, '->', outputPath);
 
-        // 获取文件名作为标题（也需要清理）
         const title = sanitizedName;
 
         ffmpeg(inputPath)
             .toFormat('mp3')
-            .audioCodec('libmp3lame')          // 明确使用 libmp3lame 编码器
-            .audioBitrate('192k')              // 设置比特率为 192k
-            .audioChannels(2)                  // 双声道
-            .audioFrequency(44100)             // 标准采样率 44.1kHz
-            // 添加 ID3 元数据标签
+            .audioCodec('libmp3lame')
+            .audioBitrate('192k')
+            .audioChannels(2)
+            .audioFrequency(44100)
             .outputOptions([
-                '-id3v2_version', '3',         // 使用 ID3v2.3
+                '-id3v2_version', '3',
                 '-metadata', `title=${title}`,
                 '-metadata', 'artist=UnknownArtist',
                 '-metadata', 'album=UnknownAlbum'
@@ -349,7 +345,6 @@ function convertToMp3(inputPath) {
                 }
             })
             .on('end', () => {
-                // 验证文件是否生成且不为空
                 if (fs.existsSync(outputPath)) {
                     const stats = fs.statSync(outputPath);
                     console.log('[MediaHelper] Conversion complete. File size:', (stats.size / 1024 / 1024).toFixed(2), 'MB');

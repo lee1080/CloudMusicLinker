@@ -7,12 +7,13 @@
 - **多平台支持**：基于 `yt-dlp`，支持下载几乎所有主流视频/音频平台的资源。
 - **抖音解析（V2OB）**：抖音链接优先通过 [V2OB](https://www.v2ob.com/douyin) 获取 CDN 直链并直接下载，**无需配置抖音 Cookie**；失败时依次回退到本地页面解析与 `yt-dlp`。
 - **Cookie 前置校验**：提交链接后先验证网易云 Cookie 是否有效，无效则立即返回错误，避免浪费解析与下载时间。
-- **自动转换**：自动将下载的媒体转换为 MP3 格式。
-- **云盘上传**：自动上传至网易云音乐个人云盘，方便在各端收听。
-- **自动依赖管理**：启动时自动检测并下载 `yt-dlp` 和 `ffmpeg`，无需手动配置环境（支持 Windows / Linux / macOS）。
+- **云盘上传增强**：修正 NOS `resourceId` 与分片上传；大文件（>20MB）自动 8MB 分片，降低 504 超时；`cloud/pub` 发布成功后校验云盘列表 MD5，避免误报成功。
+- **调试模式**：`config.js` 中 `DEBUG_MODE: true` 时，按抖音视频 ID 缓存 MP3；相同链接跳过下载/转码直接上传；不同链接自动清理旧 MP3。
+- **自动转换**：自动将下载的媒体转换为 MP3 格式（默认 192k）。
+- **自动依赖管理**：启动时自动检测并下载 `yt-dlp` 和 `ffmpeg`，无需手动配置环境。
 - **Web 界面**：提供简洁的网页端，支持实时查看处理日志，并可配置各平台 Cookie。
-- **青龙面板集成**：快捷指令或 Web 可传入青龙配置；未传入时回退 `data/settings.json` 中的青龙设置（详见 [iOS_Shortcut_Guide.md](./iOS_Shortcut_Guide.md)）。
-- **API 支持**：提供异步查询 API，完美支持 iOS 快捷指令轮询机制，解决超时问题。
+- **青龙面板集成**：快捷指令或 Web 可传入青龙配置；未传入时回退 `data/settings.json`（详见 [iOS_Shortcut_Guide.md](./iOS_Shortcut_Guide.md)）。
+- **API 支持**：异步任务 + 轮询，适配 iOS 快捷指令。
 - **快捷指令**：https://www.icloud.com/shortcuts/569b4aaa381e4bac8dfee0238195ea6a
 
 ## 安装与配置
@@ -36,24 +37,20 @@
    npm start
    ```
 
-   *首次运行时，程序会自动检查并下载必要的 `yt-dlp` 和 `ffmpeg` 二进制文件，这可能需要几分钟。*
-
-4. **配置**
-
-   访问 Web 界面 `http://localhost:3000` 的设置页，或直接修改 `config.js` / `data/settings.json`：
+4. **配置**（`config.js` / `data/settings.json`）
 
    | 配置项 | 说明 |
    |--------|------|
    | `PORT` | 服务端口（默认 `3000`） |
-   | `NETEASE_COOKIE` | 网易云 Cookie（也可在 Web 设置或请求体中传入） |
-   | `COOKIES_FROM_BROWSER` | 从浏览器读取 Cookie（主要用于 YouTube） |
+   | `DEBUG_MODE` | 调试模式：`true` 时缓存 MP3、相同视频跳过下载（默认 `true`） |
+   | `NETEASE_COOKIE` | 网易云 Cookie（也可在请求体或青龙中传入） |
    | `ENABLE_YOUTUBE` | 是否启用 YouTube 下载（默认 `false`） |
 
-   **各平台 Cookie（Web 设置页 / 快捷指令 `cookies` 字典）**
+   **各平台 Cookie**
 
-   - **网易云**：必填（上传云盘），需包含 `MUSIC_U`；提交任务时会先调用登录接口校验
-   - **抖音**：选填；V2OB 成功时不需要，仅作本地解析 / `yt-dlp` 回退
-   - **B 站 / YouTube / TikTok**：按平台需要选填
+   - **网易云**：必填，需含 `MUSIC_U`；提交前会校验登录状态
+   - **抖音**：选填；V2OB 成功时不需要
+   - **B 站 / YouTube / TikTok**：按需选填
 
 5. **Docker 运行**
 
@@ -61,7 +58,7 @@
    docker compose up -d
    ```
 
-   默认映射端口见项目内 `docker-compose.yml`（如 `3010:3000`）。
+   端口映射见 `docker-compose.yml`（如 `3010:3000`）。容器需能访问 `wanproxy.127.net`、`nosup-*.127.net`（网易上传节点）。
 
 6. **Docker 构建镜像**
 
@@ -70,93 +67,102 @@
    docker push lee1080/cloudmusic-linker:latest
    ```
 
-   构建完成后镜像名为 `lee1080/cloudmusic-linker:latest`。
-
 ## 使用方法
 
-### 1. Web 界面
+### Web 界面
 
-浏览器访问 `http://localhost:3000`，输入视频链接或分享文案，点击转换即可。界面会实时显示下载和转码进度。
+访问 `http://localhost:3000`，粘贴视频链接或完整分享文案（抖音建议含 `v.douyin.com` 短链）。
 
-**抖音建议**：直接粘贴完整分享文案（含 `v.douyin.com` 短链），程序会自动提取链接并调用 V2OB。
+### iOS 快捷指令
 
-### 2. iOS 快捷指令（推荐）
-
-为解决上传时间较长导致的超时，采用 **「任务提交 → 轮询状态」** 机制。
-
-**API 接口**
+采用 **「任务提交 → 轮询状态」** 机制。
 
 | 接口 | 方法 | 说明 |
 |------|------|------|
-| `/api/process` | `POST` | 提交任务。Body: `{ "url": "...", "cookies": {...}, "qinglongConfig": {...} }`。Cookie 校验通过后返回 `{ "status": "processing", "taskId": "..." }`；校验失败立即返回 `{ "status": "error", "message": "..." }`（HTTP 400） |
-| `/api/status/:taskId` | `GET` | 查询状态，返回 `{ "status": "processing" \| "success" \| "error", "message": "..." }` |
+| `/api/process` | `POST` | Body: `{ "url", "cookies", "qinglongConfig" }`。Cookie 无效时 HTTP 400 |
+| `/api/status/:taskId` | `GET` | 查询任务状态 |
 
-**快捷指令 `qinglongConfig` 字段**：`enabled`（布尔）、`url`、`clientId`、`clientSecret`、`neteaseEnvName`、`bilibiliEnvName`、`douyinEnvName`。
+`qinglongConfig` 字段：`enabled`（**布尔**）、`url`、`clientId`、`clientSecret`、`neteaseEnvName` 等。
 
-详细配置请参考 [iOS_Shortcut_Guide.md](./iOS_Shortcut_Guide.md)。
+详见 [iOS_Shortcut_Guide.md](./iOS_Shortcut_Guide.md)。
 
 ## 任务处理流程
 
 ```
 收到链接
     ↓
-合并 Cookie（请求体 / 青龙面板 / data/settings.json）
+合并 Cookie（请求体 / 青龙 / data/settings.json）
     ↓
-校验网易云 Cookie（login_status）
-    ├─ 无效 → 立即返回错误，终止
+校验网易云 Cookie
+    ├─ 无效 → 立即返回
     └─ 有效 → 继续
     ↓
-解析链接（抖音优先 V2OB）
+[调试模式] 相同视频 ID → 跳过下载，直接上传缓存 MP3
     ↓
-下载 → 转 MP3 → 上传云盘
+解析链接（抖音优先 V2OB）→ 下载 → 转 MP3
+    ↓
+NOS 上传（>20MB 自动分片）→ cloud/info → cloud/pub
+    ↓
+校验云盘列表 MD5 → 成功
 ```
+
+## 调试模式说明
+
+`DEBUG_MODE: true`（默认开启）时：
+
+| 场景 | 行为 |
+|------|------|
+| **相同视频**（按 `douyin:视频ID` 识别） | 跳过下载与转码，直接上传 `downloads/` 中已有 MP3 |
+| **不同视频** | 删除旧 MP3 与 `data/debug-cache.json`，重新下载 |
+| **任务结束** | 清理 `temp/` 中下载的视频；**保留** `downloads/` 中 MP3 |
+
+关闭调试：在 `config.js` 设 `DEBUG_MODE: false`，任务结束后自动删除临时文件。
 
 ## 抖音处理流程
 
 ```
-分享链接/文案
+分享文案
     ↓
-① V2OB 解析（优先，无需抖音 Cookie）
+① V2OB 解析（优先）
     ↓ 失败
-② 本地页面解析（需抖音 Cookie，解析 _ROUTER_DATA）
+② 本地 _ROUTER_DATA 解析
     ↓ 失败
-③ yt-dlp 下载（建议配置抖音 Cookie）
+③ yt-dlp
     ↓
-提取音频 → 转 MP3 → 上传网易云云盘
+转 MP3 → 上传云盘
 ```
-
-V2OB 成功后会得到 `365yg.com` 等 CDN 直链，由 `mediaHelper` 直接下载视频再转码，速度通常优于纯 `yt-dlp`。
 
 ## 目录结构
 
 ```
-├── bin/                    # 自动下载的 yt-dlp、ffmpeg
-├── data/settings.json      # 服务端设置（含青龙配置）
-├── downloads/              # 转换后的 MP3
-├── temp/                   # 临时下载文件
-├── public/                 # 前端静态资源
-├── docker-compose.yml      # Docker 运行
-├── docker-compose.build.yml# Docker 构建镜像
-├── services/               # 核心业务（coreHandler 等）
+├── data/
+│   ├── settings.json       # 服务端青龙等配置
+│   └── debug-cache.json    # 调试模式：视频 ID ↔ MP3 路径
+├── downloads/              # 转码后的 MP3（调试模式保留）
+├── temp/                   # 临时视频（任务结束清理）
+├── docker-compose.yml
+├── docker-compose.build.yml
+├── services/coreHandler.js
 └── utils/
     ├── v2obHelper.js       # V2OB 抖音解析
-    ├── v2obCrypto.js       # V2OB Authorization 签名
-    ├── mediaHelper.js      # 下载与转码（含直链下载）
-    ├── neteaseHelper.js    # Cookie 校验与云盘上传
-    ├── qinglongHelper.js   # 青龙面板 Cookie
-    └── settings.js         # 服务端默认设置
+    ├── v2obCrypto.js
+    ├── mediaHelper.js      # 下载与转码
+    ├── neteaseHelper.js    # Cookie 校验、云盘上传
+    ├── nosCloudUpload.js   # NOS 大文件分片上传
+    ├── debugCache.js       # 调试模式链接缓存
+    ├── qinglongHelper.js
+    └── settings.js
 ```
 
 ## 注意事项
 
-- 请确保服务器网络可以访问目标视频网站及 `www.v2ob.com`。
-- 自动下载依赖需要能访问 GitHub 及相关下载源。
-- **网易云 Cookie**：快捷指令可通过青龙拉取 `netease_cookie` 环境变量，也可在 `cookies.neteaseCookie` 中直接填写；提交前会校验，无效时不会开始下载。
-- **青龙面板**：`clientId` / `clientSecret` 需在青龙「应用设置」中创建；环境变量 `netease_cookie` 必须包含 `MUSIC_U`。
-- **V2OB 频率限制**：连续请求可能提示等待若干秒；程序会自动等待约 6 秒后重试一次。建议不要过于频繁提交抖音链接。
-- **抖音 Cookie**：V2OB 可用时不必配置；若 V2OB 与本地解析均失败，再配置 Cookie 供 `yt-dlp` 使用。
-- **系统代理**：若本机开启了 Charles 等抓包代理（如 `127.0.0.1:8888`），可能影响 `yt-dlp` 访问抖音；V2OB 请求已设置 `proxy: false` 绕过代理。必要时请关闭系统代理或仅在需要时开启。
-- **Cookies 安全**：请妥善保管各平台 Cookie，不要泄露。建议仅在受信任的网络环境中使用。
+- 服务器需能访问目标视频网站、`www.v2ob.com`、网易上传节点（`*.127.net`）。
+- **大文件（约 100MB+）**：上传耗时较长；若出现 `504 Gateway Timeout`，检查上行带宽或换网络环境；2 小时长音频可能因网易 `pub` 限制失败，可尝试更短视频验证。
+- **上传成功判定**：终端需出现 `云盘列表已确认`；仅 `cloud/info` 成功不会出现在云盘列表。
+- **青龙**：`netease_cookie` 须含 `MUSIC_U`；快捷指令中 `enabled` 须为布尔类型。
+- **V2OB**：连续请求可能限频，程序会自动等待约 6 秒后重试。
+- **系统代理**：Charles 等代理可能影响 `yt-dlp`；V2OB 已设置 `proxy: false`。
+- **Cookies 安全**：勿泄露 Cookie，仅在可信环境使用。
 
 ## License
 

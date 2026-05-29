@@ -1,8 +1,20 @@
-const { cloud, login_status } = require('NeteaseCloudMusicApi');
+const { login_status, user_cloud } = require('NeteaseCloudMusicApi');
+const md5 = require('md5');
+const mm = require('music-metadata');
+const { uploadSongToNos } = require('./nosCloudUpload');
+const createOption = require('NeteaseCloudMusicApi/util/option.js');
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
 const settings = require('./settings');
+
+let requestFn = null;
+function getRequest() {
+    if (!requestFn) {
+        requestFn = require('NeteaseCloudMusicApi/util/request');
+    }
+    return requestFn;
+}
 
 function resolveNeteaseCookie(cookie) {
     const effectiveCookie = (cookie || settings.getSettings().neteaseCookie || config.NETEASE_COOKIE || '').trim();
@@ -18,11 +30,6 @@ function resolveNeteaseCookie(cookie) {
     return effectiveCookie;
 }
 
-/**
- * 调用网易云接口校验 Cookie 是否有效（登录状态）
- * @param {string} [cookie]
- * @returns {Promise<string>} 有效的 Cookie 字符串
- */
 async function validateCookie(cookie) {
     const effectiveCookie = resolveNeteaseCookie(cookie);
     const result = await login_status({ cookie: effectiveCookie });
@@ -40,78 +47,274 @@ async function validateCookie(cookie) {
     throw new Error(msg || '网易云 Cookie 无效或已过期，请重新获取 Cookie');
 }
 
-/**
- * Upload file to Netease Cloud Music
- * @param {string} filePath Absolute path to the file
- * @returns {Promise<Object>} Result of the upload
- */
-async function uploadToCloud(filePath, cookie) {
-    const effectiveCookie = resolveNeteaseCookie(cookie);
+function sanitizeCloudFileName(fileName) {
+    let name = path.basename(fileName);
+    name = name
+        .replace(/[#?&=%<>:"|\\]/g, '_')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (!/\.mp3$/i.test(name)) {
+        name += '.mp3';
+    }
+    const base = name.replace(/\.mp3$/i, '');
+    if (base.length > 80) {
+        return `${base.substring(0, 80)}.mp3`;
+    }
+    return name;
+}
 
-    const fileName = path.basename(filePath);
+function logStep(step, body) {
+    const code = body?.code;
+    const msg = body?.msg || body?.message || '';
+    console.log(`[Netease] ${step}: code=${code ?? '-'} msg=${msg || '-'}`);
+    return { step, code, msg };
+}
 
-    // Create a file object compatible with the library's expectation
-    // The library usually expects 'files' in the query or body, 
-    // but for 'cloud' it handles multipart upload.
-    // We need to pass the file path or buffer.
-    // Based on common usage of NeteaseCloudMusicApi as a library:
+function getCloudBitrate() {
+    return '192000';
+}
 
-    try {
-        const fileBuffer = fs.readFileSync(filePath);
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-        // NeteaseCloudMusicApi (cloud.js) incorrectly treats the name as latin1 and converts to utf-8.
-        // We need to pre-encode it to latin1 so the library converts it back to correct utf-8.
-        // Logic: Buffer.from(original, 'utf-8').toString('latin1') -> Library: Buffer.from(input, 'latin1').toString('utf-8') -> original
-        const safeName = Buffer.from(fileName, 'utf-8').toString('latin1');
+function isPublishSuccess(pubBody) {
+    if (!pubBody) return false;
+    if (pubBody.code === 200 || pubBody.code === 201) return true;
+    if (pubBody.privateCloud) return true;
+    return false;
+}
 
-        const result = await cloud({
-            songFile: {
-                name: safeName,
-                data: fileBuffer,
-                type: 'audio/mpeg'
-            },
-            cookie: effectiveCookie
-        });
+function normalizeUploadError(error) {
+    if (error instanceof Error && error.message) {
+        return error;
+    }
+    const msg = error?.body?.msg || error?.body?.message;
+    if (msg) {
+        return new Error(msg);
+    }
+    if (error?.body?.code) {
+        return new Error(`上传失败 (code: ${error.body.code})`);
+    }
+    return new Error('上传失败，请检查网络后重试');
+}
 
-        // 检查返回结果
-        if (result.body && (result.body.code === 200 || result.body.code === 201)) {
-            return result;
-        } else {
-            // 上传失败，根据错误码提供有意义的错误消息
-            console.error('[ERR]', result);
+async function publishToCloud(request, query, publishSongId) {
+    const payload = { songid: String(publishSongId) };
+    const attempts = [
+        { label: 'eapi', option: createOption(query) },
+        { label: 'weapi', option: createOption({ ...query, crypto: 'weapi' }, 'weapi') }
+    ];
 
-            const code = result.body?.code;
-            let errorMsg = '';
-
-            switch (code) {
-                case 400:
-                    errorMsg = '网易云 Cookie 无效或已过期，请重新获取 Cookie';
-                    break;
-                case 409:
-                    errorMsg = '音频解析失败，可能是文件格式不支持';
-                    break;
-                case 501:
-                    errorMsg = '网易云服务暂时不可用';
-                    break;
-                default:
-                    errorMsg = result.body?.msg || `上传失败 (code: ${code})`;
-            }
-
-            throw new Error(errorMsg);
+    let lastBody = null;
+    for (let round = 0; round < 3; round++) {
+        if (round > 0) {
+            console.log(`[Netease] cloud/pub 第 ${round + 1} 次重试（等待 NOS 处理）...`);
+            await sleep(3000);
         }
-    } catch (error) {
-        console.error('Upload failed:', error);
-        // 确保抛出的是 Error 对象
-        if (error instanceof Error) {
-            throw error;
-        } else {
-            throw new Error(`上传失败: ${JSON.stringify(error)}`);
+        for (const attempt of attempts) {
+            const pubRes = await request('/api/cloud/pub/v2', payload, attempt.option);
+            logStep(`cloud/pub (${attempt.label})`, pubRes.body);
+            lastBody = pubRes.body;
+            if (isPublishSuccess(pubRes.body)) {
+                return pubRes;
+            }
         }
     }
+    return { body: lastBody || { code: 400 } };
+}
+
+/** 仅按 MD5 精确匹配，避免误判为已上传 */
+async function verifySongInUserCloud(cookie, fileMd5) {
+    if (!fileMd5) return false;
+    for (let offset = 0; offset < 3000; offset += 200) {
+        const res = await user_cloud({ cookie, limit: 200, offset });
+        const songs = res.body?.data || [];
+        for (const song of songs) {
+            if (song.md5 && String(song.md5).toLowerCase() === fileMd5.toLowerCase()) {
+                return true;
+            }
+        }
+        if (songs.length < 200) break;
+    }
+    return false;
+}
+
+/**
+ * 云盘上传（修正 NeteaseCloudMusicApi/cloud.js 中 resourceId 与 NOS 上传不一致的问题）
+ */
+async function uploadToCloud(filePath, cookie) {
+    try {
+    const effectiveCookie = resolveNeteaseCookie(cookie);
+    const uploadName = sanitizeCloudFileName(path.basename(filePath));
+    const fileBuffer = fs.readFileSync(filePath);
+    const fileSizeMB = parseFloat((fileBuffer.length / 1024 / 1024).toFixed(1));
+    const request = getRequest();
+
+    let ext = 'mp3';
+    const latinName = Buffer.from(uploadName, 'utf-8').toString('latin1');
+    const query = {
+        cookie: effectiveCookie,
+        songFile: {
+            name: latinName,
+            data: fileBuffer,
+            type: 'audio/mpeg',
+            md5: md5(fileBuffer),
+            size: fileBuffer.byteLength
+        }
+    };
+
+    query.songFile.name = Buffer.from(query.songFile.name, 'latin1').toString('utf-8');
+    if (query.songFile.name.includes('.')) {
+        ext = query.songFile.name.split('.').pop();
+    }
+
+    const filename = query.songFile.name
+        .replace('.' + ext, '')
+        .replace(/\s/g, '')
+        .replace(/\./g, '_');
+    const bitrate = getCloudBitrate();
+
+    let artist = '';
+    let album = '';
+    let songName = '';
+    try {
+        const metadata = await mm.parseBuffer(query.songFile.data, query.songFile.mimetype);
+        const info = metadata.common;
+        if (info.title) songName = info.title;
+        if (info.album) album = info.album;
+        if (info.artist) artist = info.artist;
+    } catch (error) {
+        console.log('[Netease] metadata parse skipped:', error.message);
+    }
+
+    const checkRes = await request(
+        '/api/cloud/upload/check',
+        {
+            bitrate: String(bitrate),
+            ext: 'mp3',
+            length: query.songFile.size,
+            md5: query.songFile.md5,
+            songId: '0',
+            version: '1'
+        },
+        createOption(query)
+    );
+    logStep('upload/check', checkRes.body);
+    console.log(`[Netease] upload/check needUpload=${checkRes.body?.needUpload} songId=${checkRes.body?.songId || '-'}`);
+
+    let resourceId;
+
+    if (checkRes.body.needUpload) {
+        try {
+            const uploadInfo = await uploadSongToNos(query, request, (msg) => console.log(`[Netease] ${msg}`));
+            resourceId = uploadInfo.body?.result?.resourceId;
+            logStep('nos/upload', { code: resourceId ? 200 : 500, msg: resourceId ? 'NOS 上传完成' : '未获取 resourceId' });
+        } catch (error) {
+            const errMsg = error?.message || String(error);
+            console.error('[Netease] nos/upload failed:', errMsg);
+            throw new Error(
+                `云盘文件上传失败（约 ${fileSizeMB} MB）。` +
+                `大文件已自动分片上传；若仍失败多为网络超时(504)，请检查到 nosup-*.127.net 的连接。` +
+                ` 详情: ${errMsg}`
+            );
+        }
+    } else {
+        console.log('[Netease] upload/check: 云盘已有相同文件，跳过 NOS 上传');
+        const tokenRes = await request(
+            '/api/nos/token/alloc',
+            {
+                bucket: '',
+                ext,
+                filename,
+                local: false,
+                nos_product: 3,
+                type: 'audio',
+                md5: query.songFile.md5
+            },
+            createOption(query)
+        );
+        resourceId = tokenRes.body?.result?.resourceId;
+        logStep('nos/token', tokenRes.body);
+    }
+
+    if (!resourceId) {
+        throw new Error(`云盘上传失败：无法获取 resourceId（文件约 ${fileSizeMB} MB）`);
+    }
+
+    const infoRes = await request(
+        '/api/upload/cloud/info/v2',
+        {
+            md5: query.songFile.md5,
+            songid: checkRes.body.songId,
+            filename: query.songFile.name,
+            song: songName || filename,
+            album: album || '未知专辑',
+            artist: artist || '未知艺术家',
+            bitrate: String(bitrate),
+            resourceId
+        },
+        createOption(query)
+    );
+    logStep('cloud/info', infoRes.body);
+    console.log(`[Netease] cloud/info songId=${infoRes.body?.songId || infoRes.body?.songid || '-'}`);
+
+    if (infoRes.body?.code && infoRes.body.code !== 200 && infoRes.body.code !== 201) {
+        throw new Error(
+            `云盘登记失败 (cloud/info code=${infoRes.body.code})。` +
+            `${infoRes.body.msg || infoRes.body.message || ''}`.trim()
+        );
+    }
+
+    // cloud/info 的 privateCloud 只表示登记成功，必须再调 pub 才会出现在云盘列表
+    const publishSongId = infoRes.body?.songId ?? infoRes.body?.songid;
+    if (!publishSongId) {
+        throw new Error('云盘发布失败：cloud/info 未返回 songId');
+    }
+
+    console.log(`[Netease] cloud/pub 发布 songId=${publishSongId}`);
+    const pubRes = await publishToCloud(request, query, publishSongId);
+
+    if (isPublishSuccess(pubRes.body)) {
+        const verified = await verifySongInUserCloud(effectiveCookie, query.songFile.md5);
+        if (verified) {
+            console.log('[Netease] 云盘列表已确认存在该文件 (MD5 匹配)');
+            return { status: 200, body: pubRes.body };
+        }
+        console.warn('[Netease] pub 返回成功但云盘列表暂未出现，继续校验...');
+    }
+
+    const inCloud = await verifySongInUserCloud(effectiveCookie, query.songFile.md5);
+    if (inCloud) {
+        console.log('[Netease] cloud/pub 未返回成功码，但云盘列表中已存在相同 MD5');
+        return { status: 200, body: { code: 200, msg: 'verified in cloud by md5' } };
+    }
+
+    console.error('[Netease] cloud/pub 完整响应:', JSON.stringify(pubRes.body));
+    const pubMsg = pubRes.body?.msg || pubRes.body?.message;
+    let hint = '文件已上传至 NOS 但未能发布到云盘。';
+    if (fileSizeMB > 95) {
+        hint += ` 当前约 ${fileSizeMB}MB，超长音频可能导致 pub 失败，可尝试更短的视频。`;
+    }
+    throw new Error(
+        `云盘发布失败 (cloud/pub code=${pubRes.body?.code ?? 'unknown'})。${pubMsg ? ` ${pubMsg}` : ''} ${hint}`
+    );
+    } catch (error) {
+        console.error('Upload failed:', error);
+        throw normalizeUploadError(error);
+    }
+}
+
+async function verifyInCloudByMd5(filePath, cookie) {
+    const effectiveCookie = resolveNeteaseCookie(cookie);
+    const fileBuffer = fs.readFileSync(filePath);
+    const fileMd5 = md5(fileBuffer);
+    return verifySongInUserCloud(effectiveCookie, fileMd5);
 }
 
 module.exports = {
     uploadToCloud,
     validateCookie,
-    resolveNeteaseCookie
+    resolveNeteaseCookie,
+    verifyInCloudByMd5
 };

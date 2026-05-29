@@ -27,7 +27,10 @@ module.exports = {
     // Enable/Disable YouTube downloads
     // YouTube has strict anti-bot measures that may cause download failures
     // Set to false to skip YouTube and show alternative download instructions
-    ENABLE_YOUTUBE: false
+    ENABLE_YOUTUBE: false,
+
+    // 调试模式：保留 temp/downloads 文件；相同链接跳过下载/转码直接上传
+    DEBUG_MODE: true,
 
     // Proxy (Optional)
     // Example: 'http://127.0.0.1:7890' or 'socks5://user:pass@host:port'
