@@ -1,8 +1,44 @@
-const { cloud } = require('NeteaseCloudMusicApi');
+const { cloud, login_status } = require('NeteaseCloudMusicApi');
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
 const settings = require('./settings');
+
+function resolveNeteaseCookie(cookie) {
+    const effectiveCookie = (cookie || settings.getSettings().neteaseCookie || config.NETEASE_COOKIE || '').trim();
+
+    if (!effectiveCookie) {
+        throw new Error('网易云 Cookie 未配置！');
+    }
+
+    if (!effectiveCookie.includes('MUSIC_U')) {
+        throw new Error('网易云 Cookie 缺少 MUSIC_U 字段，请确保已登录并获取完整 Cookie');
+    }
+
+    return effectiveCookie;
+}
+
+/**
+ * 调用网易云接口校验 Cookie 是否有效（登录状态）
+ * @param {string} [cookie]
+ * @returns {Promise<string>} 有效的 Cookie 字符串
+ */
+async function validateCookie(cookie) {
+    const effectiveCookie = resolveNeteaseCookie(cookie);
+    const result = await login_status({ cookie: effectiveCookie });
+
+    if (result.status === 200 && result.body?.data?.account) {
+        return effectiveCookie;
+    }
+
+    const code = result.body?.code ?? result.body?.data?.code;
+    if (code === 301 || code === 302) {
+        throw new Error('网易云 Cookie 无效或已过期，请重新获取 Cookie');
+    }
+
+    const msg = result.body?.msg || result.body?.message;
+    throw new Error(msg || '网易云 Cookie 无效或已过期，请重新获取 Cookie');
+}
 
 /**
  * Upload file to Netease Cloud Music
@@ -10,17 +46,7 @@ const settings = require('./settings');
  * @returns {Promise<Object>} Result of the upload
  */
 async function uploadToCloud(filePath, cookie) {
-    // Fallback to config.NETEASE_COOKIE if not in settings (migration path)
-    const effectiveCookie = cookie || config.NETEASE_COOKIE;
-
-    if (!effectiveCookie) {
-        throw new Error('网易云 Cookie 未配置！');
-    }
-
-    // 验证 Cookie 是否包含必要字段
-    if (!effectiveCookie.includes('MUSIC_U')) {
-        throw new Error('网易云 Cookie 缺少 MUSIC_U 字段，请确保已登录并获取完整 Cookie');
-    }
+    const effectiveCookie = resolveNeteaseCookie(cookie);
 
     const fileName = path.basename(filePath);
 
@@ -85,5 +111,7 @@ async function uploadToCloud(filePath, cookie) {
 }
 
 module.exports = {
-    uploadToCloud
+    uploadToCloud,
+    validateCookie,
+    resolveNeteaseCookie
 };

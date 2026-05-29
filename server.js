@@ -7,6 +7,7 @@ const coreHandler = require('./services/coreHandler');
 const settings = require('./utils/settings');
 const envCheck = require('./utils/envCheck');
 const qinglongHelper = require('./utils/qinglongHelper');
+const neteaseHelper = require('./utils/neteaseHelper');
 
 const app = express();
 
@@ -81,6 +82,91 @@ app.post('/api/qinglong/test', async (req, res) => {
 // In-memory Task Store
 const taskStore = new Map();
 
+function parseJsonObject(value, label) {
+    if (!value) return null;
+    if (typeof value === 'object') return value;
+    if (typeof value === 'string') {
+        try {
+            return JSON.parse(value);
+        } catch (e) {
+            console.warn(`[API] 无法解析 ${label}:`, e.message);
+            return null;
+        }
+    }
+    return null;
+}
+
+function isTruthyEnabled(value) {
+    if (value === true || value === 1) return true;
+    if (typeof value === 'string') {
+        return ['true', '1', 'yes', 'on'].includes(value.trim().toLowerCase());
+    }
+    return false;
+}
+
+function hasCookieValue(value) {
+    return typeof value === 'string' && value.trim().length > 0;
+}
+
+function buildQinglongConfigFromRequest(qinglongConfig) {
+    const parsed = parseJsonObject(qinglongConfig, 'qinglongConfig');
+    if (parsed && isTruthyEnabled(parsed.enabled)) {
+        return {
+            source: 'client',
+            qlEnabled: true,
+            qlUrl: parsed.url,
+            qlClientId: parsed.clientId,
+            qlClientSecret: parsed.clientSecret,
+            qlBilibiliEnvName: parsed.bilibiliEnvName || 'bilibili_cookie',
+            qlDouyinEnvName: parsed.douyinEnvName || 'douyin_cookie',
+            qlNeteaseEnvName: parsed.neteaseEnvName || 'netease_cookie'
+        };
+    }
+
+    const serverSettings = settings.getSettings();
+    if (isTruthyEnabled(serverSettings.qlEnabled)) {
+        return {
+            source: 'server',
+            qlEnabled: true,
+            qlUrl: serverSettings.qlUrl,
+            qlClientId: serverSettings.qlClientId,
+            qlClientSecret: serverSettings.qlClientSecret,
+            qlBilibiliEnvName: serverSettings.qlBilibiliEnvName || 'bilibili_cookie',
+            qlDouyinEnvName: serverSettings.qlDouyinEnvName || 'douyin_cookie',
+            qlNeteaseEnvName: serverSettings.qlNeteaseEnvName || 'netease_cookie'
+        };
+    }
+
+    return null;
+}
+
+async function mergeCookiesFromQinglong(cookies, qinglongConfig) {
+    const qlConfig = buildQinglongConfigFromRequest(qinglongConfig);
+    if (!qlConfig) {
+        console.log('[青龙] 未启用（快捷指令未传 enabled 或服务器未配置青龙）');
+        return;
+    }
+
+    console.log(`[青龙] 使用${qlConfig.source === 'client' ? '快捷指令' : '服务器'}青龙配置`);
+
+    const qlCookies = await qinglongHelper.getCookiesFromQinglong(qlConfig);
+
+    if (qlCookies.bilibiliCookie && !hasCookieValue(cookies.bilibiliCookie)) {
+        cookies.bilibiliCookie = qlCookies.bilibiliCookie;
+        console.log('[API] 使用青龙面板的 B站 Cookie');
+    }
+    if (qlCookies.douyinCookie && !hasCookieValue(cookies.douyinCookie)) {
+        cookies.douyinCookie = qlCookies.douyinCookie;
+        console.log('[API] 使用青龙面板的抖音 Cookie');
+    }
+    if (qlCookies.neteaseCookie && !hasCookieValue(cookies.neteaseCookie)) {
+        cookies.neteaseCookie = qlCookies.neteaseCookie;
+        console.log('[API] 使用青龙面板的网易云音乐 Cookie');
+    } else if (!qlCookies.neteaseCookie) {
+        console.warn('[青龙] 未获取到网易云 Cookie，请检查青龙环境变量 netease_cookie');
+    }
+}
+
 // Helper to cleanup old tasks (optional, prevents memory leak)
 setInterval(() => {
     const now = Date.now();
@@ -108,45 +194,34 @@ app.post('/api/process', async (req, res) => {
         }
     }
     cookies = cookies || {};
+    // 快捷指令有时会把 qinglongConfig 嵌在 cookies 字典里
+    if (!qinglongConfig && cookies.qinglongConfig) {
+        qinglongConfig = cookies.qinglongConfig;
+    }
 
     if (!url) {
         return res.status(400).json({ status: 'error', message: 'Missing URL' });
     }
 
-    // 从客户端传入的青龙配置获取 Cookie（而非服务器本地配置）
-    if (qinglongConfig && qinglongConfig.enabled) {
-        try {
-            console.log('[青龙] 使用客户端提供的青龙配置');
+    try {
+        await mergeCookiesFromQinglong(cookies, qinglongConfig);
+    } catch (error) {
+        console.warn('[API] 从青龙获取 Cookie 失败:', error.message);
+    }
 
-            // 适配参数格式：客户端格式 -> qinglongHelper 期望格式
-            const qlConfig = {
-                qlEnabled: qinglongConfig.enabled,
-                qlUrl: qinglongConfig.url,
-                qlClientId: qinglongConfig.clientId,
-                qlClientSecret: qinglongConfig.clientSecret,
-                qlBilibiliEnvName: qinglongConfig.bilibiliEnvName || 'bilibili_cookie',
-                qlDouyinEnvName: qinglongConfig.douyinEnvName || 'douyin_cookie',
-                qlNeteaseEnvName: qinglongConfig.neteaseEnvName || 'netease_cookie'
-            };
+    const serverSettings = settings.getSettings();
+    if (!hasCookieValue(cookies.neteaseCookie) && hasCookieValue(serverSettings.neteaseCookie)) {
+        cookies.neteaseCookie = serverSettings.neteaseCookie;
+        console.log('[API] 使用服务器 data/settings.json 中的网易云 Cookie');
+    }
 
-            const qlCookies = await qinglongHelper.getCookiesFromQinglong(qlConfig);
-
-            // 青龙获取的 Cookie 优先，客户端直接传入的 Cookie 作为后备
-            if (qlCookies.bilibiliCookie && !cookies.bilibiliCookie) {
-                cookies.bilibiliCookie = qlCookies.bilibiliCookie;
-                console.log('[API] 使用青龙面板的 B站 Cookie');
-            }
-            if (qlCookies.douyinCookie && !cookies.douyinCookie) {
-                cookies.douyinCookie = qlCookies.douyinCookie;
-                console.log('[API] 使用青龙面板的抖音 Cookie');
-            }
-            if (qlCookies.neteaseCookie && !cookies.neteaseCookie) {
-                cookies.neteaseCookie = qlCookies.neteaseCookie;
-                console.log('[API] 使用青龙面板的网易云音乐 Cookie');
-            }
-        } catch (error) {
-            console.warn('[API] 从青龙获取 Cookie 失败，使用客户端传入的 Cookie:', error.message);
-        }
+    try {
+        console.log('[API] 正在校验网易云 Cookie...');
+        cookies.neteaseCookie = await neteaseHelper.validateCookie(cookies.neteaseCookie);
+        console.log('[API] 网易云 Cookie 校验通过');
+    } catch (error) {
+        console.warn('[API] 网易云 Cookie 校验失败:', error.message);
+        return res.status(400).json({ status: 'error', message: error.message });
     }
 
     // Generate Task ID

@@ -1,0 +1,6 @@
+services:
+  cloud-music-linker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: lee1080/cloudmusic-linker:latest
