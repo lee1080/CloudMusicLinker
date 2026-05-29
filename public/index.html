@@ -40,6 +40,7 @@
                     <button class="tab-btn" onclick="openTab('bilibili')">Bilibili</button>
                     <button class="tab-btn" onclick="openTab('youtube')">YouTube</button>
                     <button class="tab-btn" onclick="openTab('tiktok')">TikTok</button>
+                    <button class="tab-btn" onclick="openTab('qinglong')">青龙面板</button>
                 </div>
 
                 <div id="netease" class="tab-content active">
@@ -50,13 +51,13 @@
 
                 <div id="douyin" class="tab-content">
                     <label>抖音 Cookie</label>
-                    <div class="helper-text">支持 Header 格式 (key=value;) 或 Netscape 格式。</div>
+                    <div class="helper-text">支持 Header 格式 (key=value;) 或 Netscape 格式。<br><em>如果启用了青龙面板，此项可留空。</em></div>
                     <textarea id="douyinCookie" placeholder="odin_tt=...; sessionid=..."></textarea>
                 </div>
 
                 <div id="bilibili" class="tab-content">
                     <label>Bilibili Cookie</label>
-                    <div class="helper-text">支持 Header 格式 (key=value;) 或 Netscape 格式。</div>
+                    <div class="helper-text">支持 Header 格式 (key=value;) 或 Netscape 格式。<br><em>如果启用了青龙面板，此项可留空。</em></div>
                     <textarea id="bilibiliCookie" placeholder="SESSDATA=..."></textarea>
                 </div>
 
@@ -70,6 +71,54 @@
                     <label>TikTok Cookie</label>
                     <div class="helper-text">支持 Header 格式 (key=value;) 或 Netscape 格式。</div>
                     <textarea id="tiktokCookie" placeholder="tt_webid=..."></textarea>
+                </div>
+
+                <div id="qinglong" class="tab-content">
+                    <label>青龙面板配置</label>
+                    <div class="helper-text">
+                        从青龙面板自动获取网易云、B站和抖音的 Cookie，无需手动更新。
+                        <br>需要在青龙面板中创建应用并授权"环境变量"权限。
+                    </div>
+
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="qlEnabled">
+                            <span>启用青龙面板 Cookie 获取</span>
+                        </label>
+                    </div>
+
+                    <div class="form-group">
+                        <label>青龙面板地址</label>
+                        <input type="text" id="qlUrl" placeholder="http://192.168.1.100:5700">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Client ID</label>
+                        <input type="text" id="qlClientId" placeholder="请在青龙面板的应用设置中获取">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Client Secret</label>
+                        <input type="password" id="qlClientSecret" placeholder="请在青龙面板的应用设置中获取">
+                    </div>
+
+                    <div class="form-group">
+                        <label>网易云音乐 Cookie 环境变量名</label>
+                        <input type="text" id="qlNeteaseEnvName" placeholder="netease_cookie" value="netease_cookie">
+                    </div>
+
+                    <div class="form-group">
+                        <label>B站 Cookie 环境变量名</label>
+                        <input type="text" id="qlBilibiliEnvName" placeholder="bilibili_cookie" value="bilibili_cookie">
+                    </div>
+
+                    <div class="form-group">
+                        <label>抖音 Cookie 环境变量名</label>
+                        <input type="text" id="qlDouyinEnvName" placeholder="douyin_cookie" value="douyin_cookie">
+                    </div>
+
+                    <button id="testQinglongBtn" class="secondary-btn">测试连接</button>
+                    <span id="qlTestResult" class="test-result"></span>
                 </div>
             </div>
 
@@ -108,10 +157,11 @@
             logConsole.innerHTML = ''; // Clear logs
             addLog('开始任务...');
 
-            // Get cookies from localStorage
+            // Get cookies and qinglong config from localStorage
             const settings = JSON.parse(localStorage.getItem('cloudMusicLinkerSettings') || '{}');
 
             try {
+                // 1. 提交任务
                 const response = await fetch('/api/process', {
                     method: 'POST',
                     headers: {
@@ -119,16 +169,42 @@
                     },
                     body: JSON.stringify({
                         url,
-                        cookies: settings // Send cookies to backend
+                        cookies: settings, // Send cookies to backend
+                        qinglongConfig: settings.qinglongConfig // Send qinglong config to backend
                     })
                 });
 
                 const result = await response.json();
 
-                if (result.status === 'success') {
+                // 2. 如果是 processing 状态，开始轮询
+                if (result.status === 'processing' && result.taskId) {
+                    addLog('任务已提交，等待处理...');
+
+                    // 轮询任务状态
+                    const maxAttempts = 60; // 最多轮询 60 次
+                    for (let i = 0; i < maxAttempts; i++) {
+                        await new Promise(resolve => setTimeout(resolve, 2000)); // 等待 2 秒
+
+                        const statusResponse = await fetch(`/api/status/${result.taskId}`);
+                        const statusResult = await statusResponse.json();
+
+                        if (statusResult.status === 'success') {
+                            addLog(`✅ 成功: ${statusResult.result?.songName || '上传完成'}`);
+                            alert('上传成功！');
+                            break;
+                        } else if (statusResult.status === 'error') {
+                            addLog(`❌ 失败: ${statusResult.message}`);
+                            alert('上传失败: ' + statusResult.message);
+                            break;
+                        }
+                        // 如果还在 processing，继续轮询
+                    }
+                } else if (result.status === 'success') {
+                    // 直接成功（不太可能，但兼容旧版本）
                     addLog(`✅ 成功: ${result.songName}`);
                     alert('上传成功！');
-                } else {
+                } else if (result.status === 'error') {
+                    // 直接失败
                     addLog(`❌ 失败: ${result.message}`);
                     alert('上传失败: ' + result.message);
                 }
@@ -146,14 +222,27 @@
         const openBtn = document.getElementById('openSettingsBtn');
         const closeBtn = document.getElementById('closeSettingsBtn');
         const saveBtn = document.getElementById('saveSettingsBtn');
+        const testQinglongBtn = document.getElementById('testQinglongBtn');
+        const qlTestResult = document.getElementById('qlTestResult');
 
-        // Inputs
+        // Cookie Inputs
         const inputs = {
             netease: document.getElementById('neteaseCookie'),
             douyin: document.getElementById('douyinCookie'),
             bilibili: document.getElementById('bilibiliCookie'),
             youtube: document.getElementById('youtubeCookie'),
             tiktok: document.getElementById('tiktokCookie')
+        };
+
+        // Qinglong Inputs
+        const qlInputs = {
+            enabled: document.getElementById('qlEnabled'),
+            url: document.getElementById('qlUrl'),
+            clientId: document.getElementById('qlClientId'),
+            clientSecret: document.getElementById('qlClientSecret'),
+            neteaseEnvName: document.getElementById('qlNeteaseEnvName'),
+            bilibiliEnvName: document.getElementById('qlBilibiliEnvName'),
+            douyinEnvName: document.getElementById('qlDouyinEnvName')
         };
 
         // Tab Logic
@@ -174,15 +263,25 @@
             });
         }
 
-        openBtn.onclick = () => {
+        openBtn.onclick = async () => {
             modal.style.display = 'flex';
-            // Load settings from localStorage
-            const settings = JSON.parse(localStorage.getItem('cloudMusicLinkerSettings') || '{}');
-            inputs.netease.value = settings.neteaseCookie || '';
-            inputs.douyin.value = settings.douyinCookie || '';
-            inputs.bilibili.value = settings.bilibiliCookie || '';
-            inputs.youtube.value = settings.youtubeCookie || '';
-            inputs.tiktok.value = settings.tiktokCookie || '';
+            // Load settings from localStorage (cookies)
+            const localSettings = JSON.parse(localStorage.getItem('cloudMusicLinkerSettings') || '{}');
+            inputs.netease.value = localSettings.neteaseCookie || '';
+            inputs.douyin.value = localSettings.douyinCookie || '';
+            inputs.bilibili.value = localSettings.bilibiliCookie || '';
+            inputs.youtube.value = localSettings.youtubeCookie || '';
+            inputs.tiktok.value = localSettings.tiktokCookie || '';
+
+            // Load qinglong settings from localStorage (not from server)
+            const qinglongSettings = localSettings.qinglongConfig || {};
+            qlInputs.enabled.checked = qinglongSettings.enabled || false;
+            qlInputs.url.value = qinglongSettings.url || '';
+            qlInputs.clientId.value = qinglongSettings.clientId || '';
+            qlInputs.clientSecret.value = qinglongSettings.clientSecret || '';
+            qlInputs.neteaseEnvName.value = qinglongSettings.neteaseEnvName || 'netease_cookie';
+            qlInputs.bilibiliEnvName.value = qinglongSettings.bilibiliEnvName || 'bilibili_cookie';
+            qlInputs.douyinEnvName.value = qinglongSettings.douyinEnvName || 'douyin_cookie';
         }
 
         closeBtn.onclick = () => {
@@ -195,16 +294,63 @@
             }
         }
 
-        saveBtn.onclick = () => {
-            const settings = {
+        // Test Qinglong Connection
+        testQinglongBtn.onclick = async () => {
+            testQinglongBtn.disabled = true;
+            testQinglongBtn.textContent = '测试中...';
+            qlTestResult.textContent = '';
+            qlTestResult.className = 'test-result';
+
+            try {
+                const response = await fetch('/api/qinglong/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        qlUrl: qlInputs.url.value,
+                        qlClientId: qlInputs.clientId.value,
+                        qlClientSecret: qlInputs.clientSecret.value
+                    })
+                });
+
+                const result = await response.json();
+                if (result.success) {
+                    qlTestResult.textContent = '✅ ' + result.message;
+                    qlTestResult.classList.add('success');
+                } else {
+                    qlTestResult.textContent = '❌ ' + result.message;
+                    qlTestResult.classList.add('error');
+                }
+            } catch (error) {
+                qlTestResult.textContent = '❌ 网络错误: ' + error.message;
+                qlTestResult.classList.add('error');
+            } finally {
+                testQinglongBtn.disabled = false;
+                testQinglongBtn.textContent = '测试连接';
+            }
+        }
+
+        saveBtn.onclick = async () => {
+            // Save cookies to localStorage
+            const cookieSettings = {
                 neteaseCookie: inputs.netease.value,
                 douyinCookie: inputs.douyin.value,
                 bilibiliCookie: inputs.bilibili.value,
                 youtubeCookie: inputs.youtube.value,
-                tiktokCookie: inputs.tiktok.value
+                tiktokCookie: inputs.tiktok.value,
+                // Save qinglong config to localStorage (client-side storage)
+                qinglongConfig: {
+                    enabled: qlInputs.enabled.checked,
+                    url: qlInputs.url.value,
+                    clientId: qlInputs.clientId.value,
+                    clientSecret: qlInputs.clientSecret.value,
+                    neteaseEnvName: qlInputs.neteaseEnvName.value,
+                    bilibiliEnvName: qlInputs.bilibiliEnvName.value,
+                    douyinEnvName: qlInputs.douyinEnvName.value
+                }
             };
-            localStorage.setItem('cloudMusicLinkerSettings', JSON.stringify(settings));
-            alert('设置已保存到本地');
+            localStorage.setItem('cloudMusicLinkerSettings', JSON.stringify(cookieSettings));
+
+            alert('设置已保存到本地浏览器');
             modal.style.display = 'none';
         }
     </script>

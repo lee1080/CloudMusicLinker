@@ -323,3 +323,97 @@ textarea:focus {
 ::-webkit-scrollbar-thumb:hover {
     background: #CCC;
 }
+
+/* Form Groups for Qinglong */
+.form-group {
+    margin-bottom: 1rem;
+}
+
+.form-group label {
+    margin-bottom: 0.3rem;
+}
+
+.form-group input[type="text"],
+.form-group input[type="password"] {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    font-size: 14px;
+    outline: none;
+    transition: all 0.3s ease;
+    background-color: #F9F9F9;
+    box-sizing: border-box;
+}
+
+.form-group input[type="text"]:focus,
+.form-group input[type="password"]:focus {
+    border-color: var(--primary-color);
+    background-color: #fff;
+    box-shadow: 0 0 0 3px rgba(236, 65, 65, 0.1);
+}
+
+/* Checkbox Label */
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    font-weight: normal;
+}
+
+.checkbox-label input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--primary-color);
+    cursor: pointer;
+}
+
+/* Secondary Button */
+.secondary-btn {
+    background-color: transparent;
+    color: var(--primary-color);
+    border: 1px solid var(--primary-color);
+    padding: 8px 16px;
+    border-radius: var(--radius-md);
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    margin-top: 0.5rem;
+}
+
+.secondary-btn:hover {
+    background-color: var(--primary-color);
+    color: white;
+}
+
+.secondary-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Test Result */
+.test-result {
+    margin-left: 0.5rem;
+    font-size: 13px;
+    vertical-align: middle;
+}
+
+.test-result.success {
+    color: #28a745;
+}
+
+.test-result.error {
+    color: #dc3545;
+}
+
+/* Helper text em */
+.helper-text em {
+    color: var(--primary-color);
+    font-style: normal;
+}
+
+/* Tabs overflow for more tabs */
+.tabs {
+    flex-wrap: wrap;
+}

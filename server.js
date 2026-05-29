@@ -6,6 +6,7 @@ const config = require('./config');
 const coreHandler = require('./services/coreHandler');
 const settings = require('./utils/settings');
 const envCheck = require('./utils/envCheck');
+const qinglongHelper = require('./utils/qinglongHelper');
 
 const app = express();
 
@@ -65,6 +66,18 @@ app.post('/api/settings', (req, res) => {
     }
 });
 
+// 青龙面板连接测试接口
+app.post('/api/qinglong/test', async (req, res) => {
+    try {
+        const { qlUrl, qlClientId, qlClientSecret } = req.body;
+        const result = await qinglongHelper.testConnection({ qlUrl, qlClientId, qlClientSecret });
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+
 // In-memory Task Store
 const taskStore = new Map();
 
@@ -79,8 +92,8 @@ setInterval(() => {
 }, 600000); // Check every 10 mins
 
 // 3. API Endpoint for Processing (Web & iOS)
-app.post('/api/process', (req, res) => {
-    let { url, cookies } = req.body;
+app.post('/api/process', async (req, res) => {
+    let { url, cookies, qinglongConfig } = req.body;
 
     console.log('[API] Received process request');
     console.log('[API] URL:', url ? (url.length > 50 ? url.substring(0, 50) + '...' : url) : 'missing');
@@ -98,6 +111,42 @@ app.post('/api/process', (req, res) => {
 
     if (!url) {
         return res.status(400).json({ status: 'error', message: 'Missing URL' });
+    }
+
+    // 从客户端传入的青龙配置获取 Cookie（而非服务器本地配置）
+    if (qinglongConfig && qinglongConfig.enabled) {
+        try {
+            console.log('[青龙] 使用客户端提供的青龙配置');
+
+            // 适配参数格式：客户端格式 -> qinglongHelper 期望格式
+            const qlConfig = {
+                qlEnabled: qinglongConfig.enabled,
+                qlUrl: qinglongConfig.url,
+                qlClientId: qinglongConfig.clientId,
+                qlClientSecret: qinglongConfig.clientSecret,
+                qlBilibiliEnvName: qinglongConfig.bilibiliEnvName || 'bilibili_cookie',
+                qlDouyinEnvName: qinglongConfig.douyinEnvName || 'douyin_cookie',
+                qlNeteaseEnvName: qinglongConfig.neteaseEnvName || 'netease_cookie'
+            };
+
+            const qlCookies = await qinglongHelper.getCookiesFromQinglong(qlConfig);
+
+            // 青龙获取的 Cookie 优先，客户端直接传入的 Cookie 作为后备
+            if (qlCookies.bilibiliCookie && !cookies.bilibiliCookie) {
+                cookies.bilibiliCookie = qlCookies.bilibiliCookie;
+                console.log('[API] 使用青龙面板的 B站 Cookie');
+            }
+            if (qlCookies.douyinCookie && !cookies.douyinCookie) {
+                cookies.douyinCookie = qlCookies.douyinCookie;
+                console.log('[API] 使用青龙面板的抖音 Cookie');
+            }
+            if (qlCookies.neteaseCookie && !cookies.neteaseCookie) {
+                cookies.neteaseCookie = qlCookies.neteaseCookie;
+                console.log('[API] 使用青龙面板的网易云音乐 Cookie');
+            }
+        } catch (error) {
+            console.warn('[API] 从青龙获取 Cookie 失败，使用客户端传入的 Cookie:', error.message);
+        }
     }
 
     // Generate Task ID

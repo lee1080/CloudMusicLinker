@@ -15,7 +15,15 @@ const DEFAULT_SETTINGS = {
     bilibiliCookie: "",
     tiktokCookie: "",
     youtubeCookie: "",
-    audioQuality: "best"
+    audioQuality: "best",
+    // 青龙面板配置
+    qlEnabled: false,           // 是否启用青龙面板获取 Cookie
+    qlUrl: "",                  // 青龙面板地址，例如 http://192.168.1.100:5700
+    qlClientId: "",             // 青龙面板 Client ID
+    qlClientSecret: "",         // 青龙面板 Client Secret
+    qlBilibiliEnvName: "bilibili_cookie",  // B站 Cookie 环境变量名
+    qlDouyinEnvName: "douyin_cookie",      // 抖音 Cookie 环境变量名
+    qlNeteaseEnvName: "netease_cookie"     // 网易云音乐 Cookie 环境变量名
 };
 
 function getSettings() {

@@ -1,8 +1,12 @@
 const axios = require('axios');
 const fs = require('fs');
+const path = require('path');
 const config = require('../config');
 const mediaHelper = require('../utils/mediaHelper');
 const neteaseHelper = require('../utils/neteaseHelper');
+const v2obHelper = require('../utils/v2obHelper');
+
+let customFilename = null;
 
 /**
  * Unshorten URL by following redirects
@@ -162,38 +166,46 @@ async function processLink(inputUrl, logCallback, cookies = {}) {
             realUrl = await unshortenUrl(rawUrl);
             log(`解析成功: ${realUrl}`);
 
-            // Custom Douyin Parser
             if (realUrl.includes('douyin.com')) {
-                log('尝试使用自定义解析器提取视频地址...');
-                const result = await getDouyinVideoUrl(realUrl, cookies.douyinCookie);
+                log('检测到抖音链接，尝试 V2OB 解析...');
+                let result = await v2obHelper.getDouyinVideoUrlByV2ob(inputUrl, log);
+                if (!result || !result.url) {
+                    log('V2OB 解析失败，尝试本地解析器...');
+                    result = await getDouyinVideoUrl(realUrl, cookies.douyinCookie);
+                }
                 if (result && result.url) {
-                    log('自定义解析成功，获取到直链');
+                    log('已获取抖音视频直链');
                     realUrl = result.url;
-                    // Sanitize title for filename
                     if (result.title) {
-                        // Take first 30 chars, remove special chars
-                        let safeTitle = result.title.replace(/[\\/:*?"<>|]/g, '').substring(0, 50).trim();
+                        const safeTitle = result.title.replace(/[\\/:*?"<>|]/g, '').substring(0, 50).trim();
                         if (safeTitle) {
                             customFilename = safeTitle;
                             log(`获取到视频标题: ${customFilename}`);
                         }
                     }
                 } else {
-                    log('自定义解析失败，尝试使用 yt-dlp 默认解析');
+                    log('解析失败，将尝试 yt-dlp');
                 }
             }
         }
 
-        log('开始下载音频...');
+        log('开始下载视频...');
         // If it's a direct URL (custom parsed) and we have a name, use it. 
         // Otherwise fallback to timestamp if direct link but no name.
         if (!customFilename && (realUrl.includes('aweme.snssdk.com') || realUrl.includes('douyin.com'))) {
             customFilename = `douyin_${Date.now()}`;
         }
 
-        downloadedFile = await mediaHelper.downloadAudio(realUrl, (percent) => {
-            log(`正在下载: ${percent.toFixed(1)}%`);
-        }, customFilename, cookies);
+        if (v2obHelper.isLikelyMediaUrl(realUrl) && !realUrl.includes('douyin.com')) {
+            log('检测到第三方媒体直链，直接下载视频文件...');
+            downloadedFile = await mediaHelper.downloadDirectMedia(realUrl, (percent) => {
+                log(`正在下载: ${percent.toFixed(1)}%`);
+            }, customFilename);
+        } else {
+            downloadedFile = await mediaHelper.downloadAudio(realUrl, (percent) => {
+                log(`正在下载: ${percent.toFixed(1)}%`);
+            }, customFilename, cookies);
+        }
         log(`下载完成: ${downloadedFile}`);
 
         log('正在转码为 MP3...');
@@ -203,12 +215,8 @@ async function processLink(inputUrl, logCallback, cookies = {}) {
         log('正在上传至网易云音乐...');
         const uploadResult = await neteaseHelper.uploadToCloud(convertedFile, cookies.neteaseCookie);
 
-        // Check result
-        if (uploadResult.body && (uploadResult.body.code === 200 || uploadResult.body.code === 201)) {
-            log('上传成功!');
-        } else {
-            throw new Error(`上传失败: ${JSON.stringify(uploadResult.body)}`);
-        }
+        // neteaseHelper 已经处理了错误检查，如果到这里说明上传成功
+        log('上传成功!');
 
         return {
             status: 'success',

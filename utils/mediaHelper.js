@@ -2,6 +2,7 @@ const { spawn, exec } = require('child_process');
 const ffmpeg = require('fluent-ffmpeg');
 const path = require('path');
 const fs = require('fs');
+const axios = require('axios');
 const config = require('../config');
 const settings = require('./settings');
 
@@ -89,7 +90,8 @@ function downloadAudio(url, onProgress, customFilename, cookies = {}) {
         // Construct args for exec
         // We need to quote paths
         const args = [
-            '-f', 'bestaudio/best',
+            // 下载视频优先（后续由 ffmpeg 统一抽取音频转 MP3）
+            '-f', 'bestvideo*+bestaudio/best',
             '-o', `"${outputTemplate}"`,
             '--no-playlist',
             '--force-overwrites',
@@ -259,6 +261,44 @@ function downloadAudio(url, onProgress, customFilename, cookies = {}) {
     });
 }
 
+function downloadDirectMedia(url, onProgress, customFilename) {
+    return new Promise(async (resolve, reject) => {
+        try {
+            const fallbackName = customFilename && customFilename.trim() ? customFilename.trim() : `douyin_${Date.now()}`;
+            const outputPath = path.join(config.TEMP_DIR, `${fallbackName}.mp4`);
+            const writer = fs.createWriteStream(outputPath);
+
+            const response = await axios.get(url, {
+                responseType: 'stream',
+                timeout: 60000,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                    'Referer': 'https://www.douyin.com/'
+                },
+                validateStatus: (s) => s >= 200 && s < 400
+            });
+
+            const total = Number(response.headers['content-length'] || 0);
+            let received = 0;
+
+            response.data.on('data', (chunk) => {
+                received += chunk.length;
+                if (total > 0 && onProgress) {
+                    onProgress(Math.min(100, (received / total) * 100));
+                }
+            });
+
+            response.data.on('error', (err) => reject(err));
+            writer.on('error', (err) => reject(err));
+            writer.on('finish', () => resolve(outputPath));
+
+            response.data.pipe(writer);
+        } catch (error) {
+            reject(new Error(`direct download failed: ${error.message}`));
+        }
+    });
+}
+
 /**
  * Convert media file to MP3 using fluent-ffmpeg
  * @param {string} inputPath 
@@ -266,7 +306,17 @@ function downloadAudio(url, onProgress, customFilename, cookies = {}) {
  */
 function convertToMp3(inputPath) {
     return new Promise((resolve, reject) => {
-        const outputPath = path.join(config.DOWNLOAD_DIR, path.basename(inputPath, path.extname(inputPath)) + '.mp3');
+        // 清理文件名中的特殊字符
+        let baseName = path.basename(inputPath, path.extname(inputPath));
+        // 替换各种斜杠变体和其他特殊字符
+        const sanitizedName = baseName
+            .replace(/[⧸⁄∕／\\\/]/g, '-')  // 各种斜杠变体替换为横杠
+            .replace(/[<>:"|?*]/g, '')      // Windows 不允许的字符移除
+            .replace(/\s+/g, ' ')            // 多个空格合并
+            .trim()
+            .substring(0, 100);              // 限制长度
+
+        const outputPath = path.join(config.DOWNLOAD_DIR, sanitizedName + '.mp3');
 
         if (config.FFMPEG_PATH !== 'ffmpeg') {
             ffmpeg.setFfmpegPath(config.FFMPEG_PATH);
@@ -274,8 +324,8 @@ function convertToMp3(inputPath) {
 
         console.log('[MediaHelper] Converting to MP3:', inputPath, '->', outputPath);
 
-        // 获取文件名作为标题
-        const title = path.basename(inputPath, path.extname(inputPath));
+        // 获取文件名作为标题（也需要清理）
+        const title = sanitizedName;
 
         ffmpeg(inputPath)
             .toFormat('mp3')
@@ -330,6 +380,7 @@ function getFileName(filePath) {
 
 module.exports = {
     downloadAudio,
+    downloadDirectMedia,
     convertToMp3,
     getFileName
 };

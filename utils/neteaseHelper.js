@@ -14,7 +14,12 @@ async function uploadToCloud(filePath, cookie) {
     const effectiveCookie = cookie || config.NETEASE_COOKIE;
 
     if (!effectiveCookie) {
-        throw new Error('Netease Cookie is not configured!');
+        throw new Error('网易云 Cookie 未配置！');
+    }
+
+    // 验证 Cookie 是否包含必要字段
+    if (!effectiveCookie.includes('MUSIC_U')) {
+        throw new Error('网易云 Cookie 缺少 MUSIC_U 字段，请确保已登录并获取完整 Cookie');
     }
 
     const fileName = path.basename(filePath);
@@ -42,10 +47,40 @@ async function uploadToCloud(filePath, cookie) {
             cookie: effectiveCookie
         });
 
-        return result;
+        // 检查返回结果
+        if (result.body && (result.body.code === 200 || result.body.code === 201)) {
+            return result;
+        } else {
+            // 上传失败，根据错误码提供有意义的错误消息
+            console.error('[ERR]', result);
+
+            const code = result.body?.code;
+            let errorMsg = '';
+
+            switch (code) {
+                case 400:
+                    errorMsg = '网易云 Cookie 无效或已过期，请重新获取 Cookie';
+                    break;
+                case 409:
+                    errorMsg = '音频解析失败，可能是文件格式不支持';
+                    break;
+                case 501:
+                    errorMsg = '网易云服务暂时不可用';
+                    break;
+                default:
+                    errorMsg = result.body?.msg || `上传失败 (code: ${code})`;
+            }
+
+            throw new Error(errorMsg);
+        }
     } catch (error) {
         console.error('Upload failed:', error);
-        throw error;
+        // 确保抛出的是 Error 对象
+        if (error instanceof Error) {
+            throw error;
+        } else {
+            throw new Error(`上传失败: ${JSON.stringify(error)}`);
+        }
     }
 }
 
