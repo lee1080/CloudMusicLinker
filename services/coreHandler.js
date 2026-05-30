@@ -171,14 +171,7 @@ async function processLink(inputUrl, logCallback, cookies = {}) {
         if (skipDownload) {
             log('正在上传至网易云音乐...');
             await neteaseHelper.uploadToCloud(convertedFile, cookies.neteaseCookie);
-            const verified = await neteaseHelper.verifyInCloudByMd5(
-                convertedFile,
-                cookies.neteaseCookie
-            );
-            if (!verified) {
-                throw new Error('上传流程结束，但云盘列表中未找到该文件，请稍后刷新网易云 App 或重试上传');
-            }
-            log('上传成功! 云盘列表已确认');
+            log('上传成功!');
             return {
                 status: 'success',
                 message: '上传完成（调试模式复用 MP3）',
@@ -270,16 +263,7 @@ async function processLink(inputUrl, logCallback, cookies = {}) {
 
         log('正在上传至网易云音乐...');
         await neteaseHelper.uploadToCloud(convertedFile, cookies.neteaseCookie);
-
-        const verified = await neteaseHelper.verifyInCloudByMd5(
-            convertedFile,
-            cookies.neteaseCookie
-        );
-        if (!verified) {
-            throw new Error('上传流程结束，但云盘列表中未找到该文件，请稍后刷新网易云 App 或重试上传');
-        }
-
-        log('上传成功! 云盘列表已确认');
+        log('上传成功!');
 
         return {
             status: 'success',

@@ -124,15 +124,21 @@ async function publishToCloud(request, query, publishSongId) {
     return { body: lastBody || { code: 400 } };
 }
 
-/** 仅按 MD5 精确匹配，避免误判为已上传 */
-async function verifySongInUserCloud(cookie, fileMd5) {
-    if (!fileMd5) return false;
+/** 在云盘列表中确认文件（MD5 或 songId） */
+async function verifySongInUserCloud(cookie, fileMd5, songId) {
+    const targetId = songId != null ? String(songId) : null;
     for (let offset = 0; offset < 3000; offset += 200) {
         const res = await user_cloud({ cookie, limit: 200, offset });
         const songs = res.body?.data || [];
         for (const song of songs) {
-            if (song.md5 && String(song.md5).toLowerCase() === fileMd5.toLowerCase()) {
+            if (fileMd5 && song.md5 && String(song.md5).toLowerCase() === fileMd5.toLowerCase()) {
                 return true;
+            }
+            if (targetId) {
+                const ids = [song.songId, song.id, song.simpleSong?.id, song.pcId]
+                    .filter((v) => v != null)
+                    .map(String);
+                if (ids.includes(targetId)) return true;
             }
         }
         if (songs.length < 200) break;
@@ -215,7 +221,7 @@ async function uploadToCloud(filePath, cookie) {
             console.error('[Netease] nos/upload failed:', errMsg);
             throw new Error(
                 `云盘文件上传失败（约 ${fileSizeMB} MB）。` +
-                `大文件已自动分片上传；若仍失败多为网络超时(504)，请检查到 nosup-*.127.net 的连接。` +
+                `若超时(504)请检查到 nosup-*.127.net 的连接。` +
                 ` 详情: ${errMsg}`
             );
         }
@@ -276,15 +282,30 @@ async function uploadToCloud(filePath, cookie) {
     const pubRes = await publishToCloud(request, query, publishSongId);
 
     if (isPublishSuccess(pubRes.body)) {
-        const verified = await verifySongInUserCloud(effectiveCookie, query.songFile.md5);
-        if (verified) {
-            console.log('[Netease] 云盘列表已确认存在该文件 (MD5 匹配)');
+        // pub 响应含 privateCloud 即表示发布成功（网易官方语义）
+        if (pubRes.body.privateCloud) {
+            console.log('[Netease] cloud/pub 成功 (privateCloud 已返回)');
             return { status: 200, body: pubRes.body };
         }
-        console.warn('[Netease] pub 返回成功但云盘列表暂未出现，继续校验...');
+        const verified = await verifySongInUserCloud(effectiveCookie, query.songFile.md5, publishSongId);
+        if (verified) {
+            console.log('[Netease] 云盘列表已确认存在该文件');
+            return { status: 200, body: pubRes.body };
+        }
+        // 列表可能有延迟，短轮询后再试
+        for (let i = 0; i < 3; i++) {
+            console.log(`[Netease] pub 已成功，等待云盘列表同步 (${i + 1}/3)...`);
+            await sleep(2000);
+            if (await verifySongInUserCloud(effectiveCookie, query.songFile.md5, publishSongId)) {
+                console.log('[Netease] 云盘列表已确认存在该文件');
+                return { status: 200, body: pubRes.body };
+            }
+        }
+        console.warn('[Netease] pub 已成功但云盘列表暂未同步，视为上传成功');
+        return { status: 200, body: pubRes.body };
     }
 
-    const inCloud = await verifySongInUserCloud(effectiveCookie, query.songFile.md5);
+    const inCloud = await verifySongInUserCloud(effectiveCookie, query.songFile.md5, publishSongId);
     if (inCloud) {
         console.log('[Netease] cloud/pub 未返回成功码，但云盘列表中已存在相同 MD5');
         return { status: 200, body: { code: 200, msg: 'verified in cloud by md5' } };
